@@ -104,13 +104,24 @@ def init_db():
         except Exception:
             pass
 
-# Initialize DB once, but allow skipping in environments without DB
-@app.before_first_request
-def setup():
+# Replace @app.before_first_request with a regular route that initializes the DB
+def initialize_db():
+    """Initialize database tables if they don't exist."""
     if os.environ.get('SKIP_DB_INIT', '0').lower() in ('1', 'true', 'yes'):
         app.logger.info('SKIP_DB_INIT set — skipping database initialization.')
         return
     init_db()
+
+# Add initialization flag
+_db_initialized = False
+
+@app.before_request
+def setup():
+    """Run database initialization before first request."""
+    global _db_initialized
+    if not _db_initialized:
+        initialize_db()
+        _db_initialized = True
 
 @app.route('/')
 def index():
