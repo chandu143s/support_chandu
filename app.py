@@ -1,9 +1,8 @@
 import os
-from flask import Flask, render_template, request, redirect, url_for, session, flash
-# import mysql.connector  # Not needed, using pymysql instead
-# ...existing code...
-from datetime import datetime
+import logging
 import pymysql
+from flask import Flask, render_template, request, redirect, url_for, session, flash
+from datetime import datetime
 
 app = Flask(__name__)
 app.secret_key = 'supersecretkey'  # For session management
@@ -30,8 +29,6 @@ def signup():
         return redirect(url_for('login'))
     return render_template('signup.html')
 
-import os
-
 # MySQL connection config with fallback values
 MYSQL_CONFIG = {
     'user': os.environ.get('MYSQL_USER', 'root'),
@@ -52,58 +49,68 @@ def get_db():
             port=MYSQL_CONFIG['port'],
             autocommit=True,
             cursorclass=pymysql.cursors.DictCursor,
-            ssl_verify_cert=False,
+            ssl={'ssl': {'ca': None}},  # optional; remove if not needed
             charset='utf8mb4'
         )
         return conn
     except Exception as e:
-        print(f"Database connection error: {e}")
+        app.logger.error(f"Database connection error: {e}")
         return None
 
 def init_db():
     conn = get_db()
-    c = conn.cursor()
-    # Add 'name' column to users table for signup
-    c.execute('''CREATE TABLE IF NOT EXISTS users (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        name VARCHAR(100) NOT NULL,
-        username VARCHAR(100) UNIQUE NOT NULL,
-        password VARCHAR(100) NOT NULL
-    )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS issues (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        user_id INT,
-        module VARCHAR(100),
-        description TEXT,
-        status VARCHAR(20) DEFAULT 'open',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(user_id) REFERENCES users(id)
-    )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS logins (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        username VARCHAR(100),
-        status VARCHAR(20),
-        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS knowledge_articles (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        issue_id INT,
-        author VARCHAR(100),
-        title VARCHAR(255),
-        content TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(issue_id) REFERENCES issues(id)
-    )''')
-    conn.commit()
-    conn.close()
+    if conn is None:
+        app.logger.error("init_db: no database connection available, skipping schema creation.")
+        return
+    try:
+        c = conn.cursor()
+        # Add 'name' column to users table for signup
+        c.execute('''CREATE TABLE IF NOT EXISTS users (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            name VARCHAR(100) NOT NULL,
+            username VARCHAR(100) UNIQUE NOT NULL,
+            password VARCHAR(100) NOT NULL
+        )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS issues (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            user_id INT,
+            module VARCHAR(100),
+            description TEXT,
+            status VARCHAR(20) DEFAULT 'open',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS logins (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            username VARCHAR(100),
+            status VARCHAR(20),
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS knowledge_articles (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            issue_id INT,
+            author VARCHAR(100),
+            title VARCHAR(255),
+            content TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(issue_id) REFERENCES issues(id)
+        )''')
+        conn.commit()
+    except Exception as e:
+        app.logger.error(f"Failed to initialize DB schema: {e}")
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
-
-# Initialize DB before the first request using Flask's event system
-@app.before_request
+# Initialize DB once, but allow skipping in environments without DB
+@app.before_first_request
 def setup():
-    if not hasattr(app, 'db_initialized'):
-        init_db()
-        app.db_initialized = True
+    if os.environ.get('SKIP_DB_INIT', '0').lower() in ('1', 'true', 'yes'):
+        app.logger.info('SKIP_DB_INIT set — skipping database initialization.')
+        return
+    init_db()
 
 @app.route('/')
 def index():
@@ -128,12 +135,10 @@ def login():
             session['username'] = username
             c.execute('INSERT INTO logins (username, status) VALUES (%s, %s)', (username, 'success'))
             conn.commit()
-            # ...existing code...
             return redirect(url_for('index'))
         else:
             c.execute('INSERT INTO logins (username, status) VALUES (%s, %s)', (username, 'failed'))
             conn.commit()
-            # ...existing code...
             flash('Invalid credentials!')
     return render_template('login.html')
 
@@ -156,7 +161,6 @@ def report_issue():
         user_id = user['id'] if user else None
         c.execute('INSERT INTO issues (user_id, module, description) VALUES (%s, %s, %s)', (user_id, module, description))
         conn.commit()
-        # ...existing code...
         flash('Issue reported!')
         return redirect(url_for('index'))
     return render_template('report_issue.html')
@@ -173,7 +177,6 @@ def issues():
 
 @app.route('/restart_server')
 def restart_server():
-    # ...existing code...
     flash('Server restart simulated. Check logs for details.')
     return redirect(url_for('index'))
 
