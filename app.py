@@ -30,31 +30,35 @@ def signup():
         return redirect(url_for('login'))
     return render_template('signup.html')
 
-# ...existing code...
+import os
 
-# MySQL connection config
+# MySQL connection config with fallback values
 MYSQL_CONFIG = {
-    'user': os.environ.get('MYSQL_USER'),
-    'password': os.environ.get('MYSQL_PASSWORD'),
-    'host': os.environ.get('MYSQL_HOST'),
-    'database': os.environ.get('MYSQL_DATABASE'),
-    'port': int(os.environ.get('MYSQL_PORT')),
+    'user': os.environ.get('MYSQL_USER', 'root'),
+    'password': os.environ.get('MYSQL_PASSWORD', 'password123'),
+    'host': os.environ.get('MYSQL_HOST', 'localhost'),
+    'database': os.environ.get('MYSQL_DATABASE', 'support_db'),
+    'port': int(os.environ.get('MYSQL_PORT', '3306')),
     'autocommit': True
 }
 
-
-
 def get_db():
-    conn = pymysql.connect(
-        host=MYSQL_CONFIG['host'],
-        user=MYSQL_CONFIG['user'],
-        password=MYSQL_CONFIG['password'],
-        database=MYSQL_CONFIG['database'],
-        port=MYSQL_CONFIG['port'],
-        autocommit=True,
-        cursorclass=pymysql.cursors.DictCursor  # <-- Add this line
-    )
-    return conn
+    try:
+        conn = pymysql.connect(
+            host=MYSQL_CONFIG['host'],
+            user=MYSQL_CONFIG['user'],
+            password=MYSQL_CONFIG['password'],
+            database=MYSQL_CONFIG['database'],
+            port=MYSQL_CONFIG['port'],
+            autocommit=True,
+            cursorclass=pymysql.cursors.DictCursor,
+            ssl_verify_cert=False,
+            charset='utf8mb4'
+        )
+        return conn
+    except Exception as e:
+        print(f"Database connection error: {e}")
+        return None
 
 def init_db():
     conn = get_db()
