@@ -1,233 +1,130 @@
 import os
-import logging
-import pymysql
 from flask import Flask, render_template, request, redirect, url_for, session, flash
 from datetime import datetime
+import pymysql
 
 app = Flask(__name__)
 app.secret_key = 'supersecretkey'  # For session management
 
-# --- Signup Route ---
-@app.route('/signup', methods=['GET', 'POST'])
-def signup():
-    if request.method == 'POST':
-        name = request.form['name']
-        username = request.form['username']
-        password = request.form['password']
-        conn = get_db()
-        c = conn.cursor()
-        # Check if username already exists
-        c.execute('SELECT * FROM users WHERE username=%s', (username,))
-        user = c.fetchone()
-        if user:
-            flash('Username already exists! Please choose another.')
-            return render_template('signup.html')
-        # Insert new user
-        c.execute('INSERT INTO users (username, password, name) VALUES (%s, %s, %s)', (username, password, name))
-        conn.commit()
-        flash('Signup successful! Please login.')
-        return redirect(url_for('login'))
-    return render_template('signup.html')
-
-# MySQL connection config with fallback values
-MYSQL_CONFIG = {
-    'user': os.environ.get('MYSQL_USER', 'root'),
-    'password': os.environ.get('MYSQL_PASSWORD', 'password123'),
-    'host': os.environ.get('MYSQL_HOST', 'localhost'),
-    'database': os.environ.get('MYSQL_DATABASE', 'support_db'),
-    'port': int(os.environ.get('MYSQL_PORT', '3306')),
-    'autocommit': True
-}
-
+# ------------------ Database Connection ------------------
 def get_db():
     try:
         conn = pymysql.connect(
-            host=MYSQL_CONFIG['host'],
-            user=MYSQL_CONFIG['user'],
-            password=MYSQL_CONFIG['password'],
-            database=MYSQL_CONFIG['database'],
-            port=MYSQL_CONFIG['port'],
-            autocommit=True,
-            cursorclass=pymysql.cursors.DictCursor,
-            ssl={'ssl': {'ca': None}},  # optional; remove if not needed
-            charset='utf8mb4'
+            host=os.getenv("DB_HOST", "localhost"),
+            user=os.getenv("DB_USER", "root"),
+            password=os.getenv("DB_PASSWORD", ""),
+            database=os.getenv("DB_NAME", "support_db"),
+            cursorclass=pymysql.cursors.DictCursor
         )
         return conn
     except Exception as e:
         app.logger.error(f"Database connection error: {e}")
         return None
 
-def init_db():
-    conn = get_db()
-    if conn is None:
-        app.logger.error("init_db: no database connection available, skipping schema creation.")
-        return
-    try:
-        c = conn.cursor()
-        # Add 'name' column to users table for signup
-        c.execute('''CREATE TABLE IF NOT EXISTS users (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            name VARCHAR(100) NOT NULL,
-            username VARCHAR(100) UNIQUE NOT NULL,
-            password VARCHAR(100) NOT NULL
-        )''')
-        c.execute('''CREATE TABLE IF NOT EXISTS issues (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            user_id INT,
-            module VARCHAR(100),
-            description TEXT,
-            status VARCHAR(20) DEFAULT 'open',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY(user_id) REFERENCES users(id)
-        )''')
-        c.execute('''CREATE TABLE IF NOT EXISTS logins (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            username VARCHAR(100),
-            status VARCHAR(20),
-            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )''')
-        c.execute('''CREATE TABLE IF NOT EXISTS knowledge_articles (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            issue_id INT,
-            author VARCHAR(100),
-            title VARCHAR(255),
-            content TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY(issue_id) REFERENCES issues(id)
-        )''')
-        conn.commit()
-    except Exception as e:
-        app.logger.error(f"Failed to initialize DB schema: {e}")
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
-
-# Replace @app.before_first_request with a regular route that initializes the DB
+# ------------------ Database Initialization ------------------
 def initialize_db():
     """Initialize database tables if they don't exist."""
     if os.environ.get('SKIP_DB_INIT', '0').lower() in ('1', 'true', 'yes'):
         app.logger.info('SKIP_DB_INIT set — skipping database initialization.')
         return
-    init_db()
+    
+    conn = get_db()
+    if conn is None:
+        app.logger.error("init_db: no database connection available, skipping schema creation.")
+        return
 
-# Add initialization flag
+    try:
+        with conn.cursor() as c:
+            # Users table
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    username VARCHAR(50) UNIQUE NOT NULL,
+                    password VARCHAR(255) NOT NULL,
+                    name VARCHAR(100),
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # Issues table
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS issues (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    user_id INT,
+                    module VARCHAR(100),
+                    description TEXT,
+                    status VARCHAR(20) DEFAULT 'open',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    closed_at TIMESTAMP NULL,
+                    FOREIGN KEY (user_id) REFERENCES users(id)
+                )
+            """)
+
+            # Logins table
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS logins (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    username VARCHAR(50),
+                    status VARCHAR(20),
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # Knowledge Articles table
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS knowledge_articles (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    issue_id INT,
+                    author VARCHAR(50),
+                    title VARCHAR(255),
+                    content TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (issue_id) REFERENCES issues(id)
+                )
+            """)
+        conn.commit()
+        app.logger.info("✅ Database initialized successfully")
+    except Exception as e:
+        app.logger.error(f"Database initialization failed: {e}")
+    finally:
+        conn.close()
+
+# ------------------ Run DB Init Once ------------------
 _db_initialized = False
 
 @app.before_request
 def setup():
-    """Run database initialization before first request."""
     global _db_initialized
     if not _db_initialized:
         initialize_db()
         _db_initialized = True
 
+# ------------------ Example Routes ------------------
 @app.route('/')
-def index():
-    if 'username' in session:
-        conn = get_db()
-        c = conn.cursor()
-        c.execute('SELECT * FROM issues ORDER BY created_at DESC')
-        issues = c.fetchall()
-        return render_template('index.html', username=session['username'], issues=issues)
-    return redirect(url_for('login'))
+def home():
+    return "Welcome to Support App ✅ Database setup is complete!"
 
-@app.route('/login', methods=['GET', 'POST'])
-def login():
+@app.route('/signup', methods=['GET', 'POST'])
+def signup():
     if request.method == 'POST':
         username = request.form['username']
         password = request.form['password']
+        name = request.form['name']
+
         conn = get_db()
-        c = conn.cursor()
-        c.execute('SELECT * FROM users WHERE username=%s', (username,))
-        user = c.fetchone()
-        if user and user['password'] == password:
-            session['username'] = username
-            c.execute('INSERT INTO logins (username, status) VALUES (%s, %s)', (username, 'success'))
-            conn.commit()
-            return redirect(url_for('index'))
-        else:
-            c.execute('INSERT INTO logins (username, status) VALUES (%s, %s)', (username, 'failed'))
-            conn.commit()
-            flash('Invalid credentials!')
-    return render_template('login.html')
+        if conn:
+            try:
+                with conn.cursor() as cursor:
+                    cursor.execute("INSERT INTO users (username, password, name) VALUES (%s, %s, %s)",
+                                   (username, password, name))
+                conn.commit()
+                flash("Signup successful!", "success")
+                return redirect(url_for('home'))
+            except Exception as e:
+                flash(f"Error: {e}", "danger")
+            finally:
+                conn.close()
+    return render_template('signup.html')
 
-@app.route('/logout')
-def logout():
-    session.pop('username', None)
-    return redirect(url_for('login'))
-
-@app.route('/report', methods=['GET', 'POST'])
-def report_issue():
-    if 'username' not in session:
-        return redirect(url_for('login'))
-    if request.method == 'POST':
-        module = request.form['module']
-        description = request.form['description']
-        conn = get_db()
-        c = conn.cursor()
-        c.execute('SELECT id FROM users WHERE username=%s', (session['username'],))
-        user = c.fetchone()
-        user_id = user['id'] if user else None
-        c.execute('INSERT INTO issues (user_id, module, description) VALUES (%s, %s, %s)', (user_id, module, description))
-        conn.commit()
-        flash('Issue reported!')
-        return redirect(url_for('index'))
-    return render_template('report_issue.html')
-
-@app.route('/issues')
-def issues():
-    if 'username' not in session:
-        return redirect(url_for('login'))
-    conn = get_db()
-    c = conn.cursor()
-    c.execute('SELECT * FROM issues ORDER BY created_at DESC')
-    issues = c.fetchall()
-    return render_template('index.html', username=session['username'], issues=issues)
-
-@app.route('/restart_server')
-def restart_server():
-    flash('Server restart simulated. Check logs for details.')
-    return redirect(url_for('index'))
-
-@app.route('/close_issue/<int:issue_id>', methods=['POST'])
-def close_issue(issue_id):
-    if 'username' not in session:
-        return redirect(url_for('login'))
-    conn = get_db()
-    c = conn.cursor()
-    c.execute(
-        'UPDATE issues SET status=%s, closed_at=NOW() WHERE id=%s',
-        ('closed', issue_id)
-    )
-    conn.commit()
-    # Redirect to knowledge article creation page after closing the issue
-    flash('Issue closed successfully. Please create a knowledge article about the resolution.')
-    return redirect(url_for('create_knowledge_article', issue_id=issue_id))
-
-@app.route('/knowledge_article/<int:issue_id>', methods=['GET', 'POST'])
-def create_knowledge_article(issue_id):
-    if 'username' not in session:
-        return redirect(url_for('login'))
-    conn = get_db()
-    c = conn.cursor()
-    # Fetch issue details for context
-    c.execute('SELECT * FROM issues WHERE id=%s', (issue_id,))
-    issue = c.fetchone()
-    if request.method == 'POST':
-        title = request.form['title']
-        content = request.form['content']
-        author = session['username']
-        c.execute(
-            'INSERT INTO knowledge_articles (issue_id, author, title, content) VALUES (%s, %s, %s, %s)',
-            (issue_id, author, title, content)
-        )
-        conn.commit()
-        flash('Knowledge article created successfully.')
-        return redirect(url_for('index'))
-    return render_template('create_knowledge_article.html', issue=issue)
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)), debug=True)
-
+if __name__ == "__main__":
+    app.run(debug=True, port=10000)
